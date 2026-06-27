@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>เกม AR จับมือ: ตามหา สระ เอ</title>
+    <!-- นำเข้า Tailwind CSS สำหรับตกแต่งความสวยงาม -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- นำเข้า MediaPipe สำหรับจับการเคลื่อนไหวมือ -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #1a202c; font-family: 'Sarabun', sans-serif; }
+        
+        /* ตั้งค่ากล้องและแคนวาสให้เต็มจอและกลับซ้ายขวาเหมือนกระจก */
+        .video-bg {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            object-fit: cover;
+            transform: scaleX(-1); /* กลับซ้ายขวา */
+            z-index: 1;
+        }
+        
+        .output-canvas {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            transform: scaleX(-1); /* กลับซ้ายขวาให้ตรงกับวิดีโอ */
+            z-index: 2;
+        }
+
+        /* เลเยอร์ UI ซ้อนทับกล้อง */
+        .ui-layer {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            z-index: 10;
+            pointer-events: none; /* ให้คลิกทะลุไปโดนปุ่มได้ */
+        }
+
+        .interactive-btn {
+            pointer-events: auto;
+            transition: all 0.2s;
+        }
+
+        /* กล่องคำตอบ */
+        .answer-box {
+            width: 30vw;
+            height: 25vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 3rem;
+            font-weight: bold;
+            border-radius: 20px;
+            background: rgba(255, 255, 255, 0.9);
+            border: 8px solid #cbd5e1;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+        }
+
+        #left-answer { left: 10vw; }
+        #right-answer { right: 10vw; }
+
+        .correct-anim { background: #4ade80 !important; border-color: #16a34a !important; color: white; }
+        .wrong-anim { background: #f87171 !important; border-color: #dc2626 !important; color: white; }
+    </style>
+</head>
+<body>
+
+    <!-- วิดีโอจากกล้อง และ แคนวาสสำหรับวาดเส้นมือ -->
+    <video id="input_video" class="video-bg" autoplay playsinline></video>
+    <canvas id="output_canvas" class="output-canvas"></canvas>
+
+    <!-- ส่วน UI ของเกม -->
+    <div class="ui-layer flex flex-col items-center">
+        
+        <!-- แถบด้านบน: คะแนน, เวลา, ข้อ -->
+        <div id="game-header" class="hidden w-full flex justify-between items-center p-6 bg-black/50 text-white backdrop-blur-sm">
+            <div class="text-3xl font-bold bg-blue-500 px-6 py-2 rounded-full">ข้อที่ <span id="q-number">1</span>/10</div>
+            <div class="text-5xl font-black text-yellow-300 drop-shadow-md">
+                เวลา: <span id="timer-display">10</span>
+            </div>
+            <div class="text-3xl font-bold bg-green-500 px-6 py-2 rounded-full">คะแนน: <span id="score-display">0</span></div>
+        </div>
+
+        <!-- หน้าจอเริ่มเกม -->
+        <div id="start-screen" class="absolute inset-0 flex flex-col items-center justify-center bg-gray-900/80 backdrop-blur-sm z-50">
+            <h1 class="text-6xl font-black text-white mb-4 drop-shadow-lg text-center">เกม AR<br><span class="text-yellow-400 text-7xl">ตามหา "สระ เอ"</span></h1>
+            <p class="text-2xl text-gray-200 mb-8 max-w-2xl text-center">
+                กติกา: ใช้กล้องของคุณ ขยับ <b class="text-yellow-300">"นิ้วชี้"</b> ไปแตะที่คำที่มี <b class="text-yellow-300">สระ เอ</b> ให้ถูกต้องภายใน 10 วินาที!
+            </p>
+            <button id="start-btn" class="interactive-btn bg-gradient-to-r from-blue-500 to-purple-600 text-white font-bold text-4xl py-6 px-16 rounded-full hover:scale-105 shadow-[0_0_20px_rgba(59,130,246,0.8)]">
+                เริ่มเกมเลย!
+            </button>
+            <p id="loading-text" class="text-yellow-300 mt-4 hidden text-xl animate-pulse">กำลังเปิดกล้องและโหลดระบบ AI...</p>
+        </div>
+
+        <!-- หน้าจอสบจบเกม -->
+        <div id="end-screen" class="hidden absolute inset-0 flex flex-col items-center justify-center bg-gray-900/90 backdrop-blur-md z-50">
+            <h1 class="text-7xl font-black text-white mb-4">สรุปคะแนน</h1>
+            <div class="text-9xl font-black text-yellow-400 mb-8 drop-shadow-[0_0_30px_rgba(250,204,21,0.6)]">
+                <span id="final-score">0</span> / 10
+            </div>
+            <button onclick="location.reload()" class="interactive-btn bg-green-500 text-white font-bold text-3xl py-4 px-12 rounded-full hover:scale-105">
+                เล่นอีกครั้ง
+            </button>
+        </div>
+
+        <!-- กล่องคำตอบซ้าย-ขวา (ซ่อนไว้ก่อนเริ่ม) -->
+        <div id="game-play-area" class="hidden w-full h-full relative">
+            <div id="left-answer" class="answer-box">คำตอบ 1</div>
+            <div id="right-answer" class="answer-box">คำตอบ 2</div>
+        </div>
+
+    </div>
+
+    <script>
+        // ข้อมูลชุดคำถาม (สระ เอ vs คำหลอก)
+        const questionsList = [
+            { correct: "ทะเล", wrong: "ภูเขา" },
+            { correct: "เวลา", wrong: "นาที" },
+            { correct: "เกเร", wrong: "ดื้อ" },
+            { correct: "เวที", wrong: "สนาม" },
+            { correct: "ลิเก", wrong: "ละคร" },
+            { correct: "โมเม", wrong: "โกหก" },
+            { correct: "โยเย", wrong: "ร้องไห้" },
+            { correct: "เฮฮา", wrong: "สนุก" },
+            { correct: "เทน้ำ", wrong: "ดื่มนม" },
+            { correct: "เปล", wrong: "เตียง" }
+        ];
+
+        // ตัวแปรควบคุมเกม
+        let currentQuestionIndex = 0;
+        let score = 0;
+        let timeLeft = 10;
+        let timerInterval;
+        let gameActive = false;
+        let isProcessingAnswer = false; // ป้องกันการตอบซ้ำ
+        let currentCorrectSide = ''; // 'left' หรือ 'right'
+
+        // Element ใน DOM
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        
+        const startScreen = document.getElementById('start-screen');
+        const startBtn = document.getElementById('start-btn');
+        const loadingText = document.getElementById('loading-text');
+        const gameHeader = document.getElementById('game-header');
+        const gamePlayArea = document.getElementById('game-play-area');
+        const endScreen = document.getElementById('end-screen');
+        
+        const leftBox = document.getElementById('left-answer');
+        const rightBox = document.getElementById('right-answer');
+        const scoreDisplay = document.getElementById('score-display');
+        const timerDisplay = document.getElementById('timer-display');
+        const qNumberDisplay = document.getElementById('q-number');
+        const finalScoreDisplay = document.getElementById('final-score');
+
+        // ฟังก์ชันสุ่มสลับตำแหน่งคำตอบซ้ายขวา
+        function shuffleAnswers() {
+            const q = questionsList[currentQuestionIndex];
+            const isLeftCorrect = Math.random() < 0.5;
+            
+            // รีเซ็ตสีกล่อง
+            leftBox.className = "answer-box";
+            rightBox.className = "answer-box";
+
+            if (isLeftCorrect) {
+                leftBox.innerText = q.correct;
+                rightBox.innerText = q.wrong;
+                currentCorrectSide = 'left';
+            } else {
+                leftBox.innerText = q.wrong;
+                rightBox.innerText = q.correct;
+                currentCorrectSide = 'right';
+            }
+            qNumberDisplay.innerText = currentQuestionIndex + 1;
+        }
+
+        // เริ่มจับเวลา
+        function startTimer() {
+            timeLeft = 10;
+            timerDisplay.innerText = timeLeft;
+            timerDisplay.className = "text-yellow-300"; // รีเซ็ตสีเวลา
+
+            clearInterval(timerInterval);
+            timerInterval = setInterval(() => {
+                if(!gameActive || isProcessingAnswer) return;
+                
+                timeLeft--;
+                timerDisplay.innerText = timeLeft;
+
+                if(timeLeft <= 3) {
+                    timerDisplay.className = "text-red-500 animate-pulse";
+                }
+
+                if (timeLeft <= 0) {
+                    // หมดเวลา = ผิด
+                    handleAnswer(false, 'timeout');
+                }
+            }, 1000);
+        }
+
+        // โหลดข้อถัดไป
+        function nextQuestion() {
+            if (currentQuestionIndex >= questionsList.length) {
+                endGame();
+                return;
+            }
+            isProcessingAnswer = false;
+            shuffleAnswers();
+            startTimer();
+        }
+
+        // จัดการเมื่อมีการตอบ (แตะกล่อง หรือ หมดเวลา)
+        function handleAnswer(isCorrect, side) {
+            isProcessingAnswer = true; // ล็อคการตอบ
+            clearInterval(timerInterval);
+
+            // แสดงผลว่าถูกหรือผิดที่กล่อง
+            if (side === 'left') {
+                leftBox.classList.add(isCorrect ? 'correct-anim' : 'wrong-anim');
+            } else if (side === 'right') {
+                rightBox.classList.add(isCorrect ? 'correct-anim' : 'wrong-anim');
+            } else if (side === 'timeout') {
+                // หมดเวลา ไฮไลต์ข้อที่ถูกให้ดู
+                if(currentCorrectSide === 'left') leftBox.classList.add('correct-anim');
+                else rightBox.classList.add('correct-anim');
+            }
+
+            if (isCorrect) {
+                score++;
+                scoreDisplay.innerText = score;
+            }
+
+            // รอ 1.5 วินาทีแล้วไปข้อต่อไป
+            setTimeout(() => {
+                currentQuestionIndex++;
+                nextQuestion();
+            }, 1500);
+        }
+
+        // ตรวจจับการชนกันของนิ้วชี้กับกล่องข้อความ
+        function checkCollision(fingerX, fingerY) {
+            if (!gameActive || isProcessingAnswer) return;
+
+            // ดึงค่าตำแหน่งของกล่องบนหน้าจอ
+            const leftRect = leftBox.getBoundingClientRect();
+            const rightRect = rightBox.getBoundingClientRect();
+
+            // เช็คกล่องซ้าย
+            if (fingerX >= leftRect.left && fingerX <= leftRect.right &&
+                fingerY >= leftRect.top && fingerY <= leftRect.bottom) {
+                handleAnswer(currentCorrectSide === 'left', 'left');
+            }
+            // เช็คกล่องขวา
+            else if (fingerX >= rightRect.left && fingerX <= rightRect.right &&
+                     fingerY >= rightRect.top && fingerY <= rightRect.bottom) {
+                handleAnswer(currentCorrectSide === 'right', 'right');
+            }
+        }
+
+        // จบเกม
+        function endGame() {
+            gameActive = false;
+            clearInterval(timerInterval);
+            gameHeader.classList.add('hidden');
+            gamePlayArea.classList.add('hidden');
+            endScreen.classList.remove('hidden');
+            finalScoreDisplay.innerText = score;
+        }
+
+        // ==========================================
+        // ส่วนของ MediaPipe (AI จับมือ)
+        // ==========================================
+        function onResults(results) {
+            // ปรับขนาด canvas ให้ตรงกับ video
+            canvasElement.width = videoElement.videoWidth;
+            canvasElement.height = videoElement.videoHeight;
+            
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                for (const landmarks of results.multiHandLandmarks) {
+                    // วาดจุดเชื่อมต่อของมือ
+                    drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {color: '#ffffff', lineWidth: 3});
+                    drawLandmarks(canvasCtx, landmarks, {color: '#3b82f6', lineWidth: 2, radius: 4});
+
+                    // จุดที่ 8 คือปลายนิ้วชี้
+                    const indexFinger = landmarks[8];
+                    
+                    // คำนวณตำแหน่งนิ้วบนหน้าจอ (แปลงจาก 0-1 เป็นพิกเซล)
+                    // หมายเหตุ: วิดีโอถูกกลับซ้ายขวา (scaleX(-1)) ดังนั้นแกน X ต้องสลับ (1 - x)
+                    const screenX = (1 - indexFinger.x) * window.innerWidth;
+                    const screenY = indexFinger.y * window.innerHeight;
+
+                    // วาดวงกลมสีแดงที่ปลายนิ้วชี้เพื่อบอกตำแหน่งเล็ง
+                    canvasCtx.beginPath();
+                    canvasCtx.arc(indexFinger.x * canvasElement.width, indexFinger.y * canvasElement.height, 10, 0, 2 * Math.PI);
+                    canvasCtx.fillStyle = "red";
+                    canvasCtx.fill();
+
+                    // นำตำแหน่งไปตรวจสอบว่าแตะโดนกล่องคำตอบหรือไม่
+                    checkCollision(screenX, screenY);
+                }
+            }
+            canvasCtx.restore();
+        }
+
+        const hands = new Hands({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+        }});
+        hands.setOptions({
+            maxNumHands: 1, // จับแค่มือเดียว
+            modelComplexity: 1,
+            minDetectionConfidence: 0.7,
+            minTrackingConfidence: 0.7
+        });
+        hands.onResults(onResults);
+
+        // จัดการเมื่อกดปุ่มเริ่มเกม
+        startBtn.addEventListener('click', () => {
+            startBtn.classList.add('hidden');
+            loadingText.classList.remove('hidden');
+
+            // เริ่มเปิดกล้อง
+            const camera = new Camera(videoElement, {
+                onFrame: async () => {
+                    await hands.send({image: videoElement});
+                },
+                width: 1280,
+                height: 720
+            });
+            
+            camera.start().then(() => {
+                // กล้องพร้อม เกมเริ่ม
+                startScreen.classList.add('hidden');
+                gameHeader.classList.remove('hidden');
+                gamePlayArea.classList.remove('hidden');
+                gameActive = true;
+                nextQuestion();
+            }).catch(err => {
+                alert("ไม่สามารถเข้าถึงกล้องได้ กรุณาอนุญาตการใช้งานกล้องในเบราว์เซอร์\n\n" + err);
+                startBtn.classList.remove('hidden');
+                loadingText.classList.add('hidden');
+            });
+        });
+
+    </script>
+</body>
+</html>
